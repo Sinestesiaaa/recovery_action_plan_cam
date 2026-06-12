@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 
-DRIVE_SCOPES = ("https://www.googleapis.com/auth/drive.readonly",)
+DRIVE_SCOPES = ("https://www.googleapis.com/auth/drive",)
 
 
 @dataclass(frozen=True)
