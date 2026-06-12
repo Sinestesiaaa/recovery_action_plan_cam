@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import importlib
+import os
+import tempfile
 
 import pandas as pd
 import plotly.express as px
@@ -9,6 +11,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import Process as process
+from drive_utils import (
+    discover_service_account_file,
+    download_file_bytes,
+    resolve_latest_file,
+)
 
 process = importlib.reload(process)
 
@@ -20,6 +27,17 @@ st.set_page_config(
 )
 
 MASTER_PATH = Path("data/main/MASTER_PROGRESS.xlsx")
+DRIVE_MASTER_NAME = "MASTER_PROGRESS.xlsx"
+
+
+def _drive_root_folder_id() -> str:
+    value = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER")
+    if value:
+        return value
+    try:
+        return str(st.secrets["GOOGLE_DRIVE_ROOT_FOLDER"])
+    except Exception:
+        return "11YZWsFx4MDk0ejyp2EbhfAnU5zgv9ZeP"
 
 
 @st.cache_data(show_spinner=False)
@@ -30,6 +48,34 @@ def load_master_from_path(path_str: str, mtime: float, size: int):
 @st.cache_data(show_spinner=False)
 def load_master_from_bytes(file_bytes: bytes, source_name: str):
     return process.load_master_workbook_from_bytes(file_bytes, source_name)
+
+
+@st.cache_data(show_spinner=False, ttl=300)
+def load_master_from_drive(
+    file_name: str,
+    credentials_path: str,
+    file_id: str | None,
+    mtime: str | None,
+    size: int | None,
+    source_name: str,
+):
+    file_bytes = download_file_bytes(credentials_path=credentials_path, file_id=file_id or "")
+    workbook = process.load_master_workbook_from_bytes(file_bytes, source_name)
+    source_note = f"Google Drive: `{source_name}`"
+    return workbook, source_note
+
+
+def _ensure_service_account_env():
+    if "GOOGLE_SERVICE_ACCOUNT_JSON" in os.environ:
+        return
+    try:
+        secret_value = st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    except Exception:
+        return
+
+    temp_file = Path(tempfile.gettempdir()) / "streamlit_google_service_account.json"
+    temp_file.write_text(secret_value, encoding="utf-8")
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(temp_file)
 
 
 def _frame(workbook: dict, sheet_name: str) -> pd.DataFrame:
@@ -912,13 +958,32 @@ def render_alerts_tab(frames: dict[str, pd.DataFrame]):
 def main():
     st.title("CAM Dashboard Recovery Actions Plan")
 
-    if MASTER_PATH.exists():
+    workbook = None
+    source_note = None
+
+    try:
+        _ensure_service_account_env()
+        credentials_file = discover_service_account_file()
+        drive_meta = resolve_latest_file(
+            file_name=DRIVE_MASTER_NAME,
+            credentials_path=credentials_file,
+            folder_id=_drive_root_folder_id(),
+        )
+        workbook, source_note = load_master_from_drive(
+            DRIVE_MASTER_NAME,
+            str(credentials_file),
+            drive_meta.file_id,
+            drive_meta.modified_time,
+            drive_meta.size,
+            drive_meta.name,
+        )
+    except Exception as exc:
+        st.sidebar.warning(f"Google Drive belum aktif: {exc}")
+
+    if workbook is None and MASTER_PATH.exists():
         stat = MASTER_PATH.stat()
         workbook = load_master_from_path(str(MASTER_PATH), stat.st_mtime, stat.st_size)
-        source_note = f"Using `{MASTER_PATH.as_posix()}`"
-    else:
-        workbook = None
-        source_note = "Master workbook not found in `data/main/`."
+        source_note = f"Using local file `{MASTER_PATH.as_posix()}`"
 
     uploaded = st.sidebar.file_uploader("Optional: upload MASTER_PROGRESS.xlsx", type=["xlsx"])
     if uploaded is not None:
@@ -929,7 +994,7 @@ def main():
         st.error("MASTER_PROGRESS.xlsx belum ditemukan.")
         st.stop()
 
-    st.sidebar.success(source_note)
+    st.sidebar.success(source_note or "Workbook loaded")
 
     dept_options = _department_options(workbook)
     default_depts = dept_options

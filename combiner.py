@@ -1,7 +1,17 @@
+from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
+import os
 from openpyxl import load_workbook
 import pandas as pd
 
+from drive_utils import (
+    discover_service_account_file,
+    download_file_bytes,
+    find_child_folder_id,
+    list_files_in_folder_tree,
+    upload_or_replace_file,
+)
 from master_shared import (
     calc_achieve as shared_calc_achieve,
     calc_status as shared_calc_status,
@@ -21,6 +31,10 @@ OUTPUT_FILE = default_output_file()
 
 SHEET_NAME = "Activity Plan"
 
+DRIVE_ROOT_FOLDER = os.getenv("GOOGLE_DRIVE_ROOT_FOLDER", "11YZWsFx4MDk0ejyp2EbhfAnU5zgv9ZeP")
+DRIVE_RAW_FOLDER_NAME = "raw"
+DRIVE_MAIN_FOLDER_NAME = "main"
+
 # ==========================================================
 # HELPER
 # ==========================================================
@@ -36,6 +50,73 @@ def calc_achieve(plan, actual):
 def calc_status(achieve):
     return shared_calc_status(achieve)
 
+
+@dataclass(frozen=True)
+class InputSource:
+    name: str
+    stem: str
+    path: Path | None = None
+    file_bytes: bytes | None = None
+
+
+def _build_input_sources() -> tuple[list[InputSource], str | None, str | None]:
+    try:
+        credentials_file = discover_service_account_file()
+        raw_folder_id = find_child_folder_id(
+            credentials_file,
+            DRIVE_ROOT_FOLDER,
+            DRIVE_RAW_FOLDER_NAME,
+        ) or DRIVE_ROOT_FOLDER
+        drive_files = list_files_in_folder_tree(credentials_file, raw_folder_id)
+        if drive_files:
+            print("=" * 60)
+            print("GOOGLE DRIVE RAW FILES FOUND")
+            print("=" * 60)
+            sources = []
+            for item in drive_files:
+                print(item.name)
+                file_bytes = download_file_bytes(credentials_file, item.file_id)
+                sources.append(
+                    InputSource(
+                        name=item.name,
+                        stem=Path(item.name).stem,
+                        file_bytes=file_bytes,
+                    )
+                )
+            print()
+            print("TOTAL FILE :", len(sources))
+            print()
+            main_folder_id = find_child_folder_id(
+                credentials_file,
+                DRIVE_ROOT_FOLDER,
+                DRIVE_MAIN_FOLDER_NAME,
+            ) or DRIVE_ROOT_FOLDER
+            return sources, str(credentials_file), main_folder_id
+    except Exception as exc:
+        print(f"GOOGLE DRIVE MODE DISABLED: {exc}")
+
+    files = sorted(INPUT_FOLDER.glob("*.xlsx"))
+    print("=" * 60)
+    print("FILES FOUND")
+    print("=" * 60)
+    for f in files:
+        print(f.name)
+    print()
+    print("TOTAL FILE :", len(files))
+    print()
+    return (
+        [
+            InputSource(
+                name=f.name,
+                stem=f.stem,
+                path=f,
+            )
+            for f in files
+        ],
+        None,
+        None,
+    )
+
 # ==========================================================
 # STORAGE
 # ==========================================================
@@ -47,52 +128,47 @@ progress_records = []
 # FILE LIST
 # ==========================================================
 
-files = list(INPUT_FOLDER.glob("*.xlsx"))
-
-print("=" * 60)
-print("FILES FOUND")
-print("=" * 60)
-
-for f in files:
-    print(f.name)
-
-print()
-print("TOTAL FILE :", len(files))
-print()
+input_sources, drive_credentials_path, drive_main_folder_id = _build_input_sources()
 
 # ==========================================================
 # LOOP FILE
 # ==========================================================
 
-for file in files:
+for file_source in input_sources:
 
     try:
 
-        print(f"\nPROCESSING : {file.name}")
+        print(f"\nPROCESSING : {file_source.name}")
 
         # ==================================================
         # FILE INFO
         # ==================================================
 
-        parts = file.stem.split("_")
+        parts = file_source.stem.split("_")
 
         site = parts[0] if len(parts) > 0 else None
         department = parts[1] if len(parts) > 1 else None
-        project_id = parts[2] if len(parts) > 2 else file.stem
+        project_id = parts[2] if len(parts) > 2 else file_source.stem
 
         project_records.append({
             "SITE": site,
             "DEPARTMENT": department,
             "PROJECT_ID": project_id,
-            "FILE_NAME": file.name
+            "FILE_NAME": file_source.name
         })
 
         # ==================================================
         # OPEN FILE
         # ==================================================
 
+        wb_source = (
+            BytesIO(file_source.file_bytes)
+            if file_source.file_bytes is not None
+            else file_source.path
+        )
+
         wb = load_workbook(
-            file,
+            wb_source,
             data_only=True
         )
 
@@ -208,7 +284,7 @@ for file in files:
     except Exception as e:
 
         print(
-            f"ERROR : {file.name}"
+            f"ERROR : {file_source.name}"
         )
 
         print(e)
@@ -829,3 +905,16 @@ with pd.ExcelWriter(
     )
 
 print("MASTER workbook generated:", OUTPUT_FILE)
+
+if drive_credentials_path and drive_main_folder_id:
+    try:
+        uploaded = upload_or_replace_file(
+            drive_credentials_path,
+            drive_main_folder_id,
+            OUTPUT_FILE.name,
+            OUTPUT_FILE.read_bytes(),
+        )
+        print("MASTER workbook uploaded to Google Drive:", uploaded.name)
+    except Exception as exc:
+        print("WARNING: failed to upload MASTER workbook to Google Drive")
+        print(exc)
