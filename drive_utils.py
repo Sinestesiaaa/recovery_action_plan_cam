@@ -312,7 +312,6 @@ def upload_or_replace_file(
     ).get("files", [])
 
     media = MediaIoBaseUpload(BytesIO(file_bytes), mimetype=mime_type, resumable=False)
-    metadata = {"name": file_name, "parents": [folder_id]}
 
     if existing:
         result = (
@@ -320,8 +319,6 @@ def upload_or_replace_file(
             .update(
                 fileId=existing[0]["id"],
                 media_body=media,
-                body=metadata,
-                supportsAllDrives=True,
             )
             .execute()
         )
@@ -329,8 +326,8 @@ def upload_or_replace_file(
         result = (
             service.files()
             .create(
+                body={"name": file_name, "parents": [folder_id]},
                 media_body=media,
-                body=metadata,
                 fields="id,name,modifiedTime,size,parents",
                 supportsAllDrives=True,
             )
