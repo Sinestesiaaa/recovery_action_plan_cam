@@ -574,6 +574,16 @@ def render_executive_dashboard(frames: dict[str, pd.DataFrame], metrics: dict[st
         fig.update_layout(margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
+    st.markdown("**Project Table**")
+    if project.empty:
+        st.info("Tidak ada data project.")
+    else:
+        project_table_cols = [col for col in ["Rank", "PROJECT_KEY", "DEPARTMENT", "PROJECT_ID", "Achievement (%)", "Total Activity", "STATUS"] if col in project.columns]
+        project_display = project[project_table_cols].copy()
+        if "PROJECT_KEY" in project_display.columns:
+            project_display = project_display.rename(columns={"PROJECT_KEY": "Project"})
+        st.dataframe(project_display, use_container_width=True, hide_index=True)
+
 
 def render_department_performance(frames: dict[str, pd.DataFrame]):
     st.subheader("Department Performance")

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 import os
+import re
 from openpyxl import load_workbook
 import pandas as pd
 
@@ -57,6 +58,15 @@ class InputSource:
     stem: str
     path: Path | None = None
     file_bytes: bytes | None = None
+
+
+def parse_project_filename(filename: str) -> tuple[str | None, str | None, str | None]:
+    stem = Path(filename).stem
+    match = re.match(r"^CAM_(?P<department>[A-Za-z0-9]+)_(?P<project_id>.+)$", stem)
+    if not match:
+        return None, None, None
+
+    return "CAM", match.group("department").upper(), match.group("project_id").upper()
 
 
 def _build_input_sources() -> tuple[list[InputSource], str | None, str | None]:
@@ -144,18 +154,27 @@ for file_source in input_sources:
         # FILE INFO
         # ==================================================
 
-        parts = file_source.stem.split("_")
+        site, department, project_id = parse_project_filename(file_source.name)
+        project_key = None if department is None or project_id is None else f"{department}_{project_id}"
 
-        site = parts[0] if len(parts) > 0 else None
-        department = parts[1] if len(parts) > 1 else None
-        project_id = parts[2] if len(parts) > 2 else file_source.stem
+        row_added = False
+        if site is not None and department is not None and project_id is not None:
+            project_records.append({
+                "SITE": site,
+                "DEPARTMENT": department,
+                "PROJECT_ID": project_id,
+                "PROJECT_KEY": project_key,
+                "FILE_NAME": file_source.name
+            })
+            row_added = True
 
-        project_records.append({
-            "SITE": site,
-            "DEPARTMENT": department,
-            "PROJECT_ID": project_id,
-            "FILE_NAME": file_source.name
-        })
+        print(
+            "DEBUG PROJECT_MASTER | "
+            f"filename={file_source.name} | "
+            f"department={department} | "
+            f"project={project_id} | "
+            f"added={row_added}"
+        )
 
         # ==================================================
         # OPEN FILE
